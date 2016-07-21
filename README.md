@@ -1,43 +1,32 @@
 # Registry
 
-Registry is an Elixir implementation of a fault-tolerant key-value store,
-where values are Elixir agents isolated in their own processes. Each
-registry is managed by an OTP supervisor for fault tolerance.
+Registry is an Elixir implementation of a monitored process registry.
+It allows processes to be associated with names, which may be any type
+(except for a pid). When a registered process terminates, its association
+is automatically removed.
+
+The registry is designed to be used with Elixir GenServer
+[:via tuples](http://elixir-lang.org/docs/stable/elixir/GenServer.html#module-name-registration).
 
 ## Examples
 
-Suppose you have a structure called `Person` that you wish to store in
-a registry called `:persons`, using each person's name as the key.
+Here is how to create a registry:
 
 ```elixir
-defmodule Person do
-  defstruct name: "", age: 0
-
-  def start_link(data) do
-    Agent.start_link(fn -> data end)
-  end
-
-  def get(pid) do
-    Agent.get(pid, fn data -> data end)
-  end
-end
+Registry.start_link()
 ```
 
-Here is how you would create a registry to store `Person` records:
-
+Here is how to add an entry to the registry:
 ```elixir
-{:ok, _supervisor_pid} = Registry.Supervisor.start_link(:persons, Person)
+Registry.register_name(:foo, pid)
 ```
 
-Here is how you would add a person to the registry and then access its
-data:
+Here is how to remove an entry from the registry:
 ```elixir
-{:ok, jane} = Registry.put(:persons, "Jane", %Person{name: "Jane", age: 20})
-data = Person.get(jane)
-IO.puts "Name: #{data.name}, Age: #{data.age}"
+Registry.unregister_name(:foo)
 ```
 
-Here is how you would remove a person from the registry:
+Here is how to look up an entry in the registry:
 ```elixir
-:ok = Registry.delete(:persons, "Jane")
+pid = Registry.whereis_name(:foo)
 ```

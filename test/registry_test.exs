@@ -2,33 +2,34 @@ defmodule RegistryTest do
   use ExUnit.Case
   doctest Registry
 
-  defmodule Entity do
-    defstruct name: "", age: 0
-
-    def start_link(data) do
-      Agent.start_link(fn -> data end)
-    end
-
-    def get(pid) do
-      Agent.get(pid, fn data -> data end)
-    end
+  setup do
+    Registry.start_link
+    Agent.start_link(fn -> [] end, name: :agent)
+    :ok
   end
 
   test "registry updates" do
-    {:ok, _pid} = Registry.Supervisor.start_link(:entities, Entity)
+    agent = Process.whereis(:agent)
 
-    {:ok, _pid} = Registry.put(:entities, "brett", %Entity{name: "brett", age: 45})
+    assert Registry.whereis_name(:foo) == :undefined
 
-    :already_registered = Registry.put(:entities, "brett", %Entity{})
+    assert Registry.register_name(:foo, agent) == :yes
+    assert Registry.whereis_name(:foo) == agent
 
-    {:ok, pid} = Registry.get(:entities, "brett")
+    assert Registry.register_name(:foo, agent) == :no
+    assert Registry.whereis_name(:foo) == agent
 
-    entity = Entity.get(pid)
-    assert entity.name == "brett"
-    assert entity.age == 45
+    assert Registry.unregister_name(:foo) == :ok
+    assert Registry.whereis_name(:foo) == :undefined
+  end
 
-    :ok = Registry.delete(:entities, "brett")
+  test "process monitor" do
+    agent = Process.whereis(:agent)
 
-    :not_found = Registry.delete(:entities, "brett")
+    Registry.register_name(:foo, agent)
+    assert Registry.whereis_name(:foo) == agent
+
+    Agent.stop(agent, :normal)
+    assert Registry.whereis_name(:foo) == :undefined
   end
 end

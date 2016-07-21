@@ -1,112 +1,121 @@
 defmodule Registry do
+  @moduledoc """
+  A process registry that allows process id's to be looked up by a name,
+  where a name may be anything other than a process id. Registered processes
+  are monitored and removed from the registry whenever they terminate.
+
+  This registry mimics the API of the erlang :global registry.
+  """
   use GenServer
 
-  alias Registry.Supervisor.Entities, as: EntitiesSupervisor
+  # Use a global name for the registry, so it's available across nodes.
+  @reg_name {:global, GlobalRegistry}
 
-  # The state structure tracks the current state of the registry.
+  #
+  # Client API
+  #
+
+  @doc """
+  Start the registry server process, but don't link it to the calling process.
+  """
+  def start do
+    GenServer.start(__MODULE__, :ok, [name: @reg_name])
+  end
+
+  @doc """
+  Start the registry server process, and link it to the calling process.
+  """
+  def start_link do
+    GenServer.start_link(__MODULE__, :ok, [name: @reg_name])
+  end
+
+  @doc """
+  Return the pid with the registered name `name`. Return :undefined if
+  the name is not registered.
+  """
+  def whereis_name(name) do
+    GenServer.call(@reg_name, {:whereis, name})
+  end
+
+  @doc """
+  Associate the name `name` with the process id `pid`. If the process ever
+  terminates, the association will be removed automatically. Return :yes if a
+  new association was created. Otherwise return :no.
+  """
+  def register_name(name, pid) when not is_pid(name) and is_pid(pid) do
+    GenServer.call(@reg_name, {:register, name, pid})
+  end
+
+  @doc """
+  Remove the association between the name `name` and it currently registered
+  process id `pid`.  Return :ok.
+  """
+  def unregister_name(name) do
+    GenServer.call(@reg_name, {:unregister, name})
+  end
+
+  @doc """
+  Send the message `msg` to the process registered under the name `name`.
+  """
+  def send(name, msg) do
+    case whereis_name(name) do
+      :undefined ->
+        {:badarg, {name, msg}}
+      pid ->
+        Kernel.send(pid, msg)
+        pid
+    end
+  end
+
+  #
+  # Server callbacks
+  #
+
   defmodule State do
-    defstruct entities: %{}, monitors: %{}, supervisor: nil
+    defstruct processes: %{},  # name => {pid, monitor}
+              monitors:  %{}   # monitor => name
   end
-
-  ## Client API
-
-  @doc """
-  Start a registry called `name` and link it to the calling process. This
-  function should be called only by a registry supervisor.
-  """
-  def start_link(name) do
-    GenServer.start_link(__MODULE__, :ok, [name: name])
-  end
-
-  @doc """
-  Bind the `registry` to its entity `supervisor`, which is a child of the
-  registry supervisor. This function should be called only by a root
-  supervisor.
-  """
-  def bind_supervisor(registry, supervisor) do
-    GenServer.call(registry, {:bind_supervisor, supervisor})
-  end
-
-  @doc """
-  Create an entity agent for the `value` and store it under `key` in the
-  requested `registry`. The `registry` may be a name or a pid.
-
-  Return {:ok, pid} if successful, where pid is the process id of the added
-  entity agent holding the `value`. Return :already_registered if an entity
-  with the same `key` is already registered.
-  """
-  def put(registry, key, value) do
-    GenServer.call(registry, {:put, key, value})
-  end
-
-  @doc """
-  Delete the entity with the matching `key` from the `registry`. The
-  `registry` may be a name or a pid.
-
-  Return :ok if an entity was found, :not_found otherwise.
-  """
-  def delete(registry, key) do
-    GenServer.call(registry, {:delete, key})
-  end
-
-  @doc """
-  Get the process for a specific `key` from the `registry`. The `registry`
-  may be a name of a pid.
-
-  Return {:ok, pid} if found, :not_found otherwise.
-  """
-  def get(registry, key) do
-    GenServer.call(registry, {:get, key})
-  end
-
-  ## Server callbacks
 
   def init(:ok) do
     {:ok, %State{}}
   end
 
-  def handle_call({:bind_supervisor, supervisor}, _from, state) do
-    state = put_in(state.supervisor, supervisor)
-    {:reply, :ok, state}
-  end
-
-  def handle_call({:put, key, value}, _from, state) do
-    case Map.has_key?(state.entities, key) do
-      true ->
-        {:reply, :already_registered, state}
-      false ->
-        {:ok, pid} = EntitiesSupervisor.start_entity(state.supervisor, value)
-        mon = Process.monitor(pid)
-        state = put_in(state.entities, Map.put(state.entities, key, pid))
-        state = put_in(state.monitors, Map.put(state.monitors, mon, key))
-        {:reply, {:ok, pid}, state}
+  def handle_call({:whereis, name}, _from, state) do
+    case Map.get(state.processes, name) do
+      {pid, _mon} -> {:reply, pid, state}
+      nil         -> {:reply, :undefined, state}
     end
   end
 
-  def handle_call({:delete, key}, _from, state) do
-    case Map.get(state.entities, key) do
+  def handle_call({:register, name, pid}, _from, state) do
+    case Map.has_key?(state.processes, name) do
+      true ->
+        {:reply, :no, state}
+      false ->
+        mon = Process.monitor(pid)
+        state = put_in(state.processes, Map.put(state.processes, name, {pid, mon}))
+        state = put_in(state.monitors, Map.put(state.monitors, mon, name))
+        {:reply, :yes, state}
+    end
+  end
+
+  def handle_call({:unregister, name}, _from, state) do
+    case Map.get(state.processes, name) do
       nil ->
-        {:reply, :not_found, state}
-      pid ->
-        EntitiesSupervisor.stop_entity(state.supervisor, pid)
+        {:reply, :ok, state}
+      {_pid, mon} ->
+        Process.demonitor(mon)
+        state = put_in(state.processes, Map.delete(state.processes, name))
+        state = put_in(state.monitors, Map.delete(state.monitors, mon))
         {:reply, :ok, state}
     end
   end
 
-  def handle_call({:get, key}, _from, state) do
-    case Map.get(state.entities, key) do
-      nil ->
-        {:reply, :not_found, state}
-      pid ->
-        {:reply, {:ok, pid}, state}
-    end
-  end
-
-  def handle_info({:DOWN, mon, :process, _pid, _reason}, state) do
-    {key, monitors} = Map.pop(state.monitors, mon)
-    {_, entities} = Map.pop(state.entities, key)
+  def handle_info({:DOWN, mon, :process, pid, _reason}, state) do
+    {name, monitors} = Map.pop(state.monitors, mon)
+    {{^pid, ^mon}, processes} = Map.pop(state.processes, name)
+    state = put_in(state.processes, processes)
     state = put_in(state.monitors, monitors)
-    state = put_in(state.entities, entities)
     {:noreply, state}
   end
 
