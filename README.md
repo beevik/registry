@@ -1,4 +1,7 @@
-# Registry
+[![Build Status](https://travis-ci.org/beevik/registry.svg?branch=master)](https://travis-ci.org/beevik/registry)
+
+Registry
+========
 
 Registry is an Elixir implementation of a monitored process registry.
 It allows processes to be associated with names, which may be any type
